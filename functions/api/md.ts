@@ -1,45 +1,59 @@
 import { parseHTML } from 'linkedom';
-// 核心修复点 1：去掉花括号，首字母大写，匹配 export default Defuddle
-import Defuddle from '../../src/index'; 
+import { Defuddle } from '../../src/defuddle';
+import type { DefuddleResponse } from '../../src/types';
+
+type PagesFunction = (context: any) => Promise<Response>;
 
 export const onRequestPost: PagesFunction = async (context) => {
   try {
-    const { html, url } = await context.request.json() as { html?: string, url?: string };
+    const body = await context.request.json() as { html?: string; url?: string };
+    const { html, url } = body;
 
-    if (!html) {
-      return new Response(JSON.stringify({ error: 'Missing HTML content' }), {
+    if (!html || typeof html !== 'string') {
+      return new Response(JSON.stringify({ error: 'Missing or invalid HTML content' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
-    // 模拟 DOM 环境
+    if (html.length > 10 * 1024 * 1024) { // 10MB limit
+      return new Response(JSON.stringify({ error: 'HTML content exceeds size limit (10MB)' }), {
+        status: 413,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // 创建 DOM 环境
     const { document } = parseHTML(html);
 
-    // 核心修复点 2：使用 new 关键字实例化类
-    // 传入 document 和 options 对象
+    // 实例化 Defuddle 并解析
     const instance = new Defuddle(document as any, { 
-      url: url || '' 
+      url: url || undefined,
+      debug: false
     });
 
-    // 调用 parse 方法进行转换
-    const result = instance.parse();
+    const result: DefuddleResponse = instance.parse();
 
     return new Response(JSON.stringify({
-      // 根据 DefuddleResponse 的结构返回结果
-      markdown: (result as any).markdown || result,
-      status: 'success'
+      success: true,
+      data: result
     }), {
+      status: 200,
       headers: {
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600'
       }
     });
 
   } catch (error) {
+    console.error('Defuddle processing error:', error);
+    
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return new Response(JSON.stringify({ 
+      success: false,
       error: 'Processing failed', 
-      message: error.message 
+      message: errorMessage
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
