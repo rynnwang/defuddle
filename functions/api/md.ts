@@ -1,5 +1,5 @@
 import { parseHTML } from 'linkedom';
-import { Defuddle } from '../../src/defuddle';
+import Defuddle from '../../src/index';
 import type { DefuddleResponse } from '../../src/types';
 
 type PagesFunction = (context: any) => Promise<Response>;
