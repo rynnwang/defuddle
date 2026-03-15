@@ -4,63 +4,79 @@ import type { DefuddleResponse } from '../../src/types';
 
 type PagesFunction = (context: any) => Promise<Response>;
 
-// 深度物理清洗：确保没有任何脚本和样式进入解析环节
-function hardSanitize(doc: any) {
-  const garbage = ['script', 'style', 'iframe', 'noscript', 'canvas', 'svg', 'header', 'footer', 'nav', 'aside'];
-  garbage.forEach(tag => {
-    const elements = doc.querySelectorAll(tag);
-    elements.forEach((el: any) => el.remove());
+/**
+ * 极致清洗逻辑：剥离所有干扰，只留纯净文本容器
+ */
+function extremeSanitize(doc: any) {
+  // 1. 物理删除绝对干扰项
+  const blackList = ['script', 'style', 'iframe', 'noscript', 'canvas', 'svg', 'header', 'footer', 'nav', 'aside'];
+  blackList.forEach(tag => doc.querySelectorAll(tag).forEach((el: any) => el.remove()));
+
+  // 2. 剥离所有元素的属性（重点：删掉 style, class, data-*）
+  // 当标签没有任何属性时，转换引擎会更容易将其转为纯 Markdown 而不是保留 HTML
+  const allElements = doc.querySelectorAll('*');
+  allElements.forEach((el: any) => {
+    while (el.attributes.length > 0) {
+      el.removeAttribute(el.attributes[0].name);
+    }
   });
 }
 
-// 核心解析逻辑
-async function getParsedResult(html: string, url: string | undefined): Promise<DefuddleResponse> {
+/**
+ * 统一解析逻辑
+ */
+async function processToResponse(html: string, url: string | undefined, format: string): Promise<Response> {
   const { document } = parseHTML(html);
   
-  // 第一步：在解析前先暴力清扫 DOM 树
-  hardSanitize(document);
+  // 执行深度清洗
+  extremeSanitize(document);
 
   const instance = new Defuddle(document as any, { 
     url: url || undefined,
     debug: false 
   });
   
-  return instance.parse();
+  const result: DefuddleResponse = instance.parse();
+  
+  // 提取 Markdown 字符串
+  const markdown = (result as any).markdown || (result as any).content || String(result);
+
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
+  };
+
+  if (format === 'markdown' || format === 'md') {
+    return new Response(markdown, {
+      headers: { ...corsHeaders, 'Content-Type': 'text/markdown; charset=utf-8' }
+    });
+  } else {
+    // JSON 格式返回完整对象
+    return new Response(JSON.stringify({ success: true, data: { ...result, markdown } }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
 }
 
 export const onRequestGet: PagesFunction = async (context) => {
   const { searchParams } = new URL(context.request.url);
   const targetUrl = searchParams.get('url');
-  // 默认为 markdown 格式
   const format = searchParams.get('format')?.toLowerCase() || 'markdown';
 
-  if (!targetUrl) return new Response('Error: Missing url parameter', { status: 400 });
+  if (!targetUrl) return new Response('Missing url parameter', { status: 400 });
 
   try {
     const response = await fetch(targetUrl, {
       headers: { 
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' 
       }
     });
 
-    if (!response.ok) return new Response(`Fetch Failed: ${response.status}`, { status: response.status });
+    if (!response.ok) return new Response(`Fetch Error: ${response.status}`, { status: response.status });
 
     const html = await response.text();
-    const result = await getParsedResult(html, targetUrl);
-    
-    // 提取真正的 Markdown 字符串
-    const markdown = (result as any).markdown || (result as any).content || "";
-
-    if (format === 'markdown' || format === 'md') {
-      return new Response(markdown, {
-        headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
-      });
-    } else {
-      return new Response(JSON.stringify({ success: true, data: result }), {
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-      });
-    }
+    return await processToResponse(html, targetUrl, format);
   } catch (error: any) {
     return new Response(`Error: ${error.message}`, { status: 500 });
   }
@@ -70,21 +86,8 @@ export const onRequestPost: PagesFunction = async (context) => {
   try {
     const body = await context.request.json() as { html?: string; url?: string; format?: string };
     const { html, url, format = 'json' } = body;
-
-    if (!html) return new Response(JSON.stringify({ success: false, error: 'No HTML provided' }), { status: 400 });
-
-    const result = await getParsedResult(html, url);
-    const markdown = (result as any).markdown || (result as any).content || "";
-
-    if (format === 'markdown' || format === 'md') {
-      return new Response(markdown, {
-        headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
-      });
-    } else {
-      return new Response(JSON.stringify({ success: true, data: result }), {
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-      });
-    }
+    if (!html) return new Response(JSON.stringify({ error: 'Missing HTML' }), { status: 400 });
+    return await processToResponse(html, url, format);
   } catch (error: any) {
     return new Response(JSON.stringify({ success: false, error: error.message }), { status: 500 });
   }
