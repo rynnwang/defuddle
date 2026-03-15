@@ -4,87 +4,64 @@ import type { DefuddleResponse } from '../../src/types';
 
 type PagesFunction = (context: any) => Promise<Response>;
 
-// 核心处理函数，复用解析逻辑
-async function processHtml(html: string, url?: string): Promise<DefuddleResponse> {
+// 核心解析函数
+async function processToResponse(html: string, url: string | undefined, format: string): Promise<Response> {
   const { document } = parseHTML(html);
-  const instance = new Defuddle(document as any, { 
-    url: url || undefined,
-    debug: false
-  });
-  return instance.parse();
+  const instance = new Defuddle(document as any, { url: url || undefined });
+  const result: DefuddleResponse = instance.parse();
+  
+  const markdown = (result as any).markdown || (result as any).content || "";
+
+  // 根据参数决定返回格式
+  if (format === 'markdown' || format === 'md') {
+    return new Response(markdown, {
+      headers: { 
+        'Content-Type': 'text/markdown; charset=utf-8',
+        'Access-Control-Allow-Origin': '*' 
+      }
+    });
+  } else {
+    // 默认返回 JSON，包含完整数据
+    return new Response(JSON.stringify({ success: true, data: result }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*' 
+      }
+    });
+  }
 }
 
-// 处理 GET 请求：通过 URL 参数抓取
 export const onRequestGet: PagesFunction = async (context) => {
   const { searchParams } = new URL(context.request.url);
   const targetUrl = searchParams.get('url');
+  const format = searchParams.get('format') || 'markdown'; // GET 默认返回纯文本
 
-  if (!targetUrl) {
-    return new Response(JSON.stringify({ error: 'Missing "url" parameter' }), { 
-      status: 400, 
-      headers: { 'Content-Type': 'application/json' } 
-    });
-  }
+  if (!targetUrl) return new Response('Missing url parameter', { status: 400 });
 
   try {
     const response = await fetch(targetUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,webp,*/*;q=0.8'
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' }
     });
 
-    if (response.status === 401 || response.status === 403) {
-      return new Response(JSON.stringify({ 
-        success: false, 
-        error: 'AUTH_BLOCKED', 
-        status: response.status,
-        message: '该网站启用了反爬机制，请手动复制 HTML 源码进行转换。' 
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-
-    if (!response.ok) throw new Error(`Fetch failed with status ${response.status}`);
+    if (!response.ok) return new Response(`Fetch failed: ${response.status}`, { status: response.status });
 
     const html = await response.text();
-    const result = await processHtml(html, targetUrl);
-
-    return new Response(JSON.stringify({ success: true, data: result }), {
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
+    return await processToResponse(html, targetUrl, format);
   } catch (error: any) {
-    return new Response(JSON.stringify({ success: false, error: 'Fetch failed', message: error.message }), { status: 500 });
+    return new Response(`Error: ${error.message}`, { status: 500 });
   }
 };
 
-// 保持并优化你之前的 POST 逻辑
 export const onRequestPost: PagesFunction = async (context) => {
   try {
-    const body = await context.request.json() as { html?: string; url?: string };
-    const { html, url } = body;
+    const body = await context.request.json() as { html?: string; url?: string; format?: string };
+    const { html, url, format = 'json' } = body; // POST 默认返回 JSON
 
-    if (!html || typeof html !== 'string') {
-      return new Response(JSON.stringify({ error: 'Missing or invalid HTML content' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
+    if (!html) return new Response(JSON.stringify({ error: 'Missing HTML' }), { status: 400 });
 
-    if (html.length > 10 * 1024 * 1024) {
-      return new Response(JSON.stringify({ error: 'HTML content exceeds size limit (10MB)' }), { status: 413 });
-    }
-
-    const result = await processHtml(html, url);
-
-    return new Response(JSON.stringify({ success: true, data: result }), {
-      headers: { 
-        'Content-Type': 'application/json', 
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=3600'
-      }
-    });
-
+    return await processToResponse(html, url, format);
   } catch (error: any) {
-    return new Response(JSON.stringify({ success: false, error: 'Processing failed', message: error.message }), { status: 500 });
+    return new Response(JSON.stringify({ success: false, error: error.message }), { status: 500 });
   }
 };
 
